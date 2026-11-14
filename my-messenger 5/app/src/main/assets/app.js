@@ -26,6 +26,59 @@
     toastTimer = setTimeout(function () { t.hidden = true; }, 3500);
   }
 
+  /* ---------- network relay servers ---------- */
+  // Mobile networks often block direct phone-to-phone links, so relay (TURN) servers are listed too.
+  var ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject', credential: 'openrelayproject'
+    }
+  ];
+
+  /* ---------- ring tones (generated, no audio files) ---------- */
+  var audioCtx = null, ringInt = null;
+  function tone(freq, dur) {
+    if (!audioCtx) return;
+    try {
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = freq;
+      o.connect(g); g.connect(audioCtx.destination);
+      var t = audioCtx.currentTime;
+      g.gain.setValueAtTime(0.3, t);
+      g.gain.setValueAtTime(0, t + dur);
+      o.start(t); o.stop(t + dur + 0.05);
+    } catch (e) {}
+  }
+  function stopRing() { if (ringInt) { clearInterval(ringInt); ringInt = null; } }
+  function startRing(isIncoming) {
+    stopRing();
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) { return; }
+    function once() {
+      if (isIncoming) {
+        tone(880, 0.18);
+        setTimeout(function () { tone(660, 0.18); }, 230);
+        setTimeout(function () { tone(880, 0.18); }, 700);
+        setTimeout(function () { tone(660, 0.18); }, 930);
+      } else {
+        tone(425, 1.0);
+      }
+    }
+    once();
+    ringInt = setInterval(once, isIncoming ? 2400 : 3500);
+  }
+
   /* ---------- state ---------- */
   var me = load('me', null);              // { id, name }
   var contacts = load('contacts', {});    // id -> { id, name, custom, unread }
@@ -137,6 +190,7 @@
     c.unread = 0; saveContacts();
     showScreen('chat');
     renderChat();
+    connectTo(id);
     flush(id);
   }
   function closeChat() {
@@ -171,7 +225,7 @@
     if (typeof Peer === 'undefined') { setStatus(false, 'Գրադարանը բացակայում է'); return; }
     if (peer && !peer.destroyed) return;
     setStatus(false, 'Միանում է…');
-    var p = new Peer(me.id);
+    var p = new Peer(me.id, { config: { iceServers: ICE_SERVERS } });
     peer = p;
 
     p.on('open', function () {
@@ -224,22 +278,40 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
   window.addEventListener('online', tick);
 
+  // conns[id] is a list: a contact can have several links at once (one we opened, one they opened).
+  var CONNECT_PATIENCE = 40000; // how long a link may stay "connecting" before we try a fresh one
   function setupConn(conn) {
     var id = conn.peer;
-    conns[id] = conn;
+    if (!conns[id]) conns[id] = [];
+    if (!conn._t) conn._t = Date.now();
+    conns[id].push(conn);
     conn.on('open', function () {
       try { conn.send({ t: 'hello', name: me.name }); } catch (e) {}
       flush(id);
     });
     conn.on('data', function (d) { onData(id, d); });
-    function drop() { if (conns[id] === conn) delete conns[id]; }
+    function drop() {
+      var l = conns[id] || [];
+      var k = l.indexOf(conn);
+      if (k !== -1) l.splice(k, 1);
+    }
     conn.on('close', drop);
     conn.on('error', drop);
   }
+  function openConn(id) {
+    var l = conns[id] || [];
+    for (var k = l.length - 1; k >= 0; k--) { if (l[k].open) return l[k]; }
+    return null;
+  }
   function connectTo(id) {
-    var c = conns[id];
-    if (c && (c.open || (c._t && Date.now() - c._t < 12000))) return c;
-    if (c) { try { c.close(); } catch (e) {} delete conns[id]; }
+    var ready = openConn(id);
+    if (ready) return ready;
+    var l = conns[id] || [];
+    for (var k = 0; k < l.length; k++) {
+      if (Date.now() - l[k]._t < CONNECT_PATIENCE) return l[k]; // still trying, do not restart it
+    }
+    l.slice().forEach(function (c) { try { c.close(); } catch (e) {} });
+    conns[id] = [];
     if (!peer || !online) return null;
     var nc = peer.connect(id, { reliable: true });
     nc._t = Date.now();
@@ -247,18 +319,28 @@
     return nc;
   }
   function sendCtl(id, obj) {
-    var c = conns[id];
-    if (c && c.open) { try { c.send(obj); } catch (e) {} }
+    var c = openConn(id);
+    if (c) { try { c.send(obj); } catch (e) {} }
   }
   function flush(id) {
     var list = pending(id);
     if (!list.length || !online) return;
     var c = connectTo(id);
-    if (c && c.open) {
-      list.forEach(function (m) {
-        try { c.send({ t: 'msg', i: m.i, x: m.x, ts: m.ts }); } catch (e) {}
-      });
+    if (!c || !c.open) return;
+    // A link can look open but be dead after a network change. If messages stay unconfirmed, start a fresh link.
+    var stuck = list.some(function (m) { return (m.n || 0) >= 3; });
+    if (stuck) {
+      list.forEach(function (m) { m.n = 0; });
+      saveMsgs();
+      (conns[id] || []).slice().forEach(function (x) { try { x.close(); } catch (e) {} });
+      conns[id] = [];
+      connectTo(id);
+      return;
     }
+    list.forEach(function (m) {
+      m.n = (m.n || 0) + 1;
+      try { c.send({ t: 'msg', i: m.i, x: m.x, ts: m.ts }); } catch (e) {}
+    });
   }
 
   function onData(id, d) {
@@ -333,6 +415,8 @@
       var c = peer.call(id, stream, { metadata: { video: video, name: me.name } });
       if (!c) { toast('Չհաջողվեց զանգել'); endCall(false); return; }
       bindCall(c);
+      startRing(false);
+      setTimeout(function () { watchIce(c); }, 0);
       clearTimeout(ringTimer);
       ringTimer = setTimeout(function () {
         if (call && callState === 'ringing') { toast('Պատասխան չեղավ'); endCall(true); }
@@ -347,7 +431,9 @@
     c.on('stream', function (rs) {
       if (call !== c) return;
       clearTimeout(ringTimer);
+      stopRing();
       var r = $('#remote');
+      r.muted = false; r.volume = 1;
       r.srcObject = rs;
       var p = r.play(); if (p && p.catch) p.catch(function () {});
       $('#call-avatar').hidden = rs.getVideoTracks().length > 0;
@@ -362,6 +448,22 @@
     c.on('close', function () { if (call === c) endCall(false); });
     c.on('error', function () { if (call === c) endCall(false); });
   }
+  // Shows how the network link is doing while connecting, and gives up cleanly if it fails.
+  function watchIce(c) {
+    var pc = c.peerConnection;
+    if (!pc || !pc.addEventListener) return;
+    pc.addEventListener('iceconnectionstatechange', function () {
+      if (call !== c) return;
+      var s = pc.iceConnectionState;
+      if (callState !== 'active') {
+        $('#call-state').textContent = (callState === 'ringing' ? 'Զանգում ենք…' : 'Կապվում ենք…') + ' (' + s + ')';
+      }
+      if (s === 'failed') {
+        toast('Կապը չհաստատվեց։ Ցանցը չի թողնում ուղիղ կապ');
+        endCall(true);
+      }
+    });
+  }
   function updateTimer() {
     var s = Math.floor((Date.now() - callStart) / 1000);
     var m = Math.floor(s / 60), r = s % 60;
@@ -374,6 +476,7 @@
     var c = call, id = callId;
     call = null; callId = null; callState = '';
     clearInterval(callTimer); clearTimeout(ringTimer);
+    stopRing();
     if (notify && id) sendCtl(id, { t: 'bye' });
     if (c) { try { c.close(); } catch (e) {} }
     stopStream(localStream); localStream = null;
@@ -395,6 +498,7 @@
     $('#inc-kind').textContent = video ? 'Տեսազանգ' : 'Ձայնային զանգ';
     $('#dlg-incoming').dataset.video = video ? '1' : '';
     openDialog('#dlg-incoming');
+    startRing(true);
     connectTo(id);
     clearTimeout(incomingTimer);
     incomingTimer = setTimeout(function () { if (incoming === c) rejectIncoming(); }, 45000);
@@ -404,6 +508,7 @@
   }
   function dismissIncoming() {
     clearTimeout(incomingTimer);
+    stopRing();
     incoming = null;
     closeDialog('#dlg-incoming');
   }
@@ -420,6 +525,7 @@
     var video = $('#dlg-incoming').dataset.video === '1';
     var id = c.peer;
     clearTimeout(incomingTimer);
+    stopRing();
     navigator.mediaDevices.getUserMedia(mediaConstraints(video)).then(function (stream) {
       if (incoming !== c) { stopStream(stream); return; }
       incoming = null;
@@ -429,6 +535,11 @@
       setCallState('connecting', 'Կապվում ենք…');
       bindCall(c);
       c.answer(stream);
+      setTimeout(function () { watchIce(c); }, 0);
+      clearTimeout(ringTimer);
+      ringTimer = setTimeout(function () {
+        if (call === c && callState !== 'active') { toast('Կապը չհաստատվեց'); endCall(true); }
+      }, 40000);
     }).catch(function () {
       toast('Տեսախցիկի կամ խոսափողի թույլտվությունը չի տրվել');
       rejectIncoming();
