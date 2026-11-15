@@ -179,6 +179,9 @@ dialog h2 { margin: 0; font-size: 1.2rem; }
     <h1>Իմ մեսենջերը
       <span class="sub"><span class="status" id="status"><span class="dot"></span><span id="status-text">Միանում է…</span></span></span>
     </h1>
+    <button type="button" class="icon-btn" id="btn-notif" aria-label="Ծանուցումներ և ֆոնային աշխատանք">
+      <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
+    </button>
     <button type="button" class="icon-btn" id="btn-myid" aria-label="Իմ ID-ն">Իմ ID</button>
   </header>
   <ul id="chats"></ul>
@@ -256,6 +259,17 @@ dialog h2 { margin: 0; font-size: 1.2rem; }
       <button type="button" class="btn" id="myid-share" hidden>Կիսվել</button>
       <button type="button" class="btn ghost" id="myid-close">Փակել</button>
     </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-notif">
+  <div class="col">
+    <h2>Ծանուցումներ և ֆոնային աշխատանք</h2>
+    <p class="muted">Որպեսզի նամակներն ու զանգերը հասնեն նաև կողպված հեռախոսին, թույլատրիր երեք բան։</p>
+    <button type="button" class="btn" id="n-notif">1. Թույլատրել ծանուցումները</button>
+    <button type="button" class="btn" id="n-batt">2. Անջատել մարտկոցի սահմանափակումը</button>
+    <button type="button" class="btn" id="n-full">3. Թույլատրել զանգը լրիվ էկրանով</button>
+    <button type="button" class="btn ghost" id="n-close">Փակել</button>
   </div>
 </dialog>
 

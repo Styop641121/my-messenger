@@ -1,102 +1,137 @@
 package am.mymessenger;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
+import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
-import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
-import androidx.webkit.WebViewAssetLoader;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Thin native shell around the messenger web app in assets/.
- * The page is served from https://appassets.androidplatform.net/ so the browser
- * treats it as a secure origin and allows camera and microphone access.
+ * The window. The WebView itself belongs to Hub, so closing this window
+ * does not stop the messenger. This activity only attaches the WebView to the screen.
  */
 public class MainActivity extends Activity {
 
-    private static final String HOST = "appassets.androidplatform.net";
-    private static final String START_URL = "https://" + HOST + "/assets/index.html";
     private static final int REQ_MEDIA = 1;
+    private static final int REQ_BASIC = 2;
 
-    private WebView webView;
     private PermissionRequest pendingRequest;
+    private FrameLayout root;
 
-    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        Hub.activity = this;
 
-        webView = new WebView(this);
-        webView.setBackgroundColor(Color.TRANSPARENT);
-        setContentView(webView);
+        root = new FrameLayout(this);
+        setContentView(root);
+        attachWeb();
 
-        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
-                .setDomain(HOST)
-                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
-                .build();
+        startService();
+        askBasicPermissions();
+        handleIntent(getIntent());
+    }
 
-        WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setAllowFileAccess(false);
-        s.setAllowContentAccess(false);
+    private void attachWeb() {
+        WebView w = Hub.ensure(this);
+        if (w.getParent() instanceof ViewGroup) {
+            ((ViewGroup) w.getParent()).removeView(w);
+        }
+        root.addView(w, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
 
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                return loader.shouldInterceptRequest(request.getUrl());
-            }
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
+    }
 
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // Never leave the app page.
-                return !HOST.equals(request.getUrl().getHost());
-            }
-        });
-
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        handlePermissionRequest(request);
-                    }
-                });
-            }
-        });
-
-        webView.addJavascriptInterface(new Bridge(), "Android");
-
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState);
-        } else {
-            webView.loadUrl(START_URL);
+    /** Opened from a notification: show the chat, and show over the lock screen for calls. */
+    private void startService() {
+        try {
+            startForegroundService(new Intent(this, MessengerService.class));
+        } catch (Exception e) {
+            // The app still works while it is open.
         }
     }
 
-    private void handlePermissionRequest(PermissionRequest request) {
-        if (!HOST.equals(request.getOrigin().getHost())) {
-            request.deny();
-            return;
+    /** Opened from a notification: show the chat, and show over the lock screen for calls. */
+    private void handleIntent(Intent intent) {
+        if (intent == null) return;
+        if ("call".equals(intent.getAction())) {
+            showOverLock(true);
         }
+        String chat = intent.getStringExtra("chat");
+        if (chat != null && !chat.isEmpty()) {
+            Hub.pendingChat = chat;
+            Hub.ensure(this).evaluateJavascript(
+                    "window.__open && window.__open(" + JSONObject.quote(chat) + ")",
+                    value -> { if ("true".equals(value)) Hub.pendingChat = null; });
+        }
+        intent.removeExtra("chat");
+        intent.setAction(null);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void showOverLock(boolean on) {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(on);
+            setTurnScreenOn(on);
+        } else {
+            int f = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON;
+            if (on) {
+                getWindow().addFlags(f);
+            } else {
+                getWindow().clearFlags(f);
+            }
+        }
+    }
+
+    /* ---------- permissions ---------- */
+
+    private void askBasicPermissions() {
+        List<String> need = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.CAMERA);
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            need.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (need.isEmpty()) {
+            askBatteryOnce();
+        } else {
+            requestPermissions(need.toArray(new String[0]), REQ_BASIC);
+        }
+    }
+
+    private void askBatteryOnce() {
+        SharedPreferences sp = getSharedPreferences("app", MODE_PRIVATE);
+        if (sp.getBoolean("battery_asked", false)) return;
+        sp.edit().putBoolean("battery_asked", true).apply();
+        new NativeBridge(getApplicationContext()).openSettings("battery");
+    }
+
+    /** Called when the page asks for camera or microphone. */
+    void handlePermissionRequest(PermissionRequest request) {
         List<String> missing = new ArrayList<>();
         for (String r : request.getResources()) {
             if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)
@@ -121,6 +156,10 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_BASIC) {
+            askBatteryOnce();
+            return;
+        }
         if (requestCode != REQ_MEDIA || pendingRequest == null) {
             return;
         }
@@ -138,37 +177,44 @@ public class MainActivity extends Activity {
         pendingRequest = null;
     }
 
+    /* ---------- lifecycle ---------- */
+
     @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        webView.saveState(outState);
+    protected void onStart() {
+        super.onStart();
+        Hub.visible = true;
+    }
+
+    @Override
+    protected void onStop() {
+        Hub.visible = false;
+        showOverLock(false);
+        super.onStop();
     }
 
     @Override
     public void onBackPressed() {
-        webView.evaluateJavascript("window.__back ? window.__back() : false", value -> {
-            if (!"true".equals(value)) {
-                finish();
-            }
-        });
+        Hub.ensure(this).evaluateJavascript(
+                "window.__back ? window.__back() : false", value -> {
+                    if (!"true".equals(value)) {
+                        // Hide the window but keep the messenger running.
+                        moveTaskToBack(true);
+                    }
+                });
     }
 
     @Override
     protected void onDestroy() {
-        if (webView != null) {
-            webView.destroy();
+        if (pendingRequest != null) {
+            pendingRequest.deny();
+            pendingRequest = null;
+        }
+        if (root != null) {
+            root.removeAllViews(); // the WebView stays alive in Hub
+        }
+        if (Hub.activity == this) {
+            Hub.activity = null;
         }
         super.onDestroy();
-    }
-
-    /** Small bridge so the page can open the system share sheet. */
-    public class Bridge {
-        @JavascriptInterface
-        public void share(String text) {
-            Intent send = new Intent(Intent.ACTION_SEND);
-            send.setType("text/plain");
-            send.putExtra(Intent.EXTRA_TEXT, text);
-            startActivity(Intent.createChooser(send, null));
-        }
     }
 }

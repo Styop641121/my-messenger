@@ -26,6 +26,20 @@
     toastTimer = setTimeout(function () { t.hidden = true; }, 3500);
   }
 
+  /* ---------- Android bridge (absent when the page runs in a normal browser) ---------- */
+  var NATIVE = window.Android || null;
+  function native(fn, a, b, c) {
+    try {
+      if (!NATIVE || typeof NATIVE[fn] !== 'function') return undefined;
+      if (arguments.length === 1) return NATIVE[fn]();
+      if (arguments.length === 2) return NATIVE[fn](a);
+      if (arguments.length === 3) return NATIVE[fn](a, b);
+      return NATIVE[fn](a, b, c);
+    } catch (e) { return undefined; }
+  }
+  function hasNative(fn) { return !!NATIVE && typeof NATIVE[fn] === 'function'; }
+  function missedCall(id) { native('notifyMessage', id, nameOf(id), 'Բաց թողնված զանգ'); }
+
   /* ---------- network relay servers ---------- */
   // Mobile networks often block direct phone-to-phone links, so relay (TURN) servers are listed too.
   var ICE_SERVERS = [
@@ -58,7 +72,10 @@
       o.start(t); o.stop(t + dur + 0.05);
     } catch (e) {}
   }
-  function stopRing() { if (ringInt) { clearInterval(ringInt); ringInt = null; } }
+  function stopRing() {
+    if (ringInt) { clearInterval(ringInt); ringInt = null; }
+    native('stopCall'); // also stops the phone's own ringtone and clears the call notification
+  }
   function startRing(isIncoming) {
     stopRing();
     try {
@@ -188,6 +205,7 @@
     current = id;
     var c = ensureContact(id);
     c.unread = 0; saveContacts();
+    native('clearNotification', id);
     showScreen('chat');
     renderChat();
     connectTo(id);
@@ -361,6 +379,7 @@
       list.push({ i: d.i, m: false, x: d.x.slice(0, 4000), ts: Date.now() });
       if (current === id) { ct.unread = 0; } else { ct.unread = (ct.unread || 0) + 1; }
       saveMsgs(); saveContacts();
+      native('notifyMessage', id, nameOf(id), d.x.slice(0, 300)); // shown only when the app is not on screen
       if (current === id) renderChat(); else if (!current) renderHome();
     } else if (d.t === 'ack') {
       var l2 = msgs[id] || [], changed = false;
@@ -369,7 +388,7 @@
       }
       if (changed) { saveMsgs(); if (current === id) renderChat(); }
     } else if (d.t === 'bye') {
-      if (incoming && incoming.peer === id) { dismissIncoming(); toast('Բաց թողնված զանգ'); }
+      if (incoming && incoming.peer === id) { dismissIncoming(); toast('Բաց թողնված զանգ'); missedCall(id); }
       if (call && callId === id) endCall(false);
     }
   }
@@ -397,6 +416,7 @@
     $('#remote').srcObject = null;
     setCallState('ringing', 'Զանգում ենք…');
     $('#call').hidden = false;
+    native('keepScreenOn', true);
   }
   function setCallState(state, text) {
     callState = state;
@@ -482,6 +502,7 @@
     stopStream(localStream); localStream = null;
     $('#remote').srcObject = null; $('#local').srcObject = null;
     $('#call').hidden = true;
+    native('keepScreenOn', false);
   }
 
   function onIncomingCall(c) {
@@ -498,12 +519,14 @@
     $('#inc-kind').textContent = video ? 'Տեսազանգ' : 'Ձայնային զանգ';
     $('#dlg-incoming').dataset.video = video ? '1' : '';
     openDialog('#dlg-incoming');
-    startRing(true);
+    if (hasNative('incomingCall')) native('incomingCall', id, nameOf(id), video); else startRing(true);
     connectTo(id);
     clearTimeout(incomingTimer);
-    incomingTimer = setTimeout(function () { if (incoming === c) rejectIncoming(); }, 45000);
+    incomingTimer = setTimeout(function () {
+      if (incoming === c) { rejectIncoming(); missedCall(id); }
+    }, 45000);
     c.on('close', function () {
-      if (incoming === c) { dismissIncoming(); toast('Բաց թողնված զանգ'); }
+      if (incoming === c) { dismissIncoming(); toast('Բաց թողնված զանգ'); missedCall(id); }
     });
   }
   function dismissIncoming() {
@@ -590,6 +613,13 @@
     openChat(id);
   });
 
+  // notification settings
+  $('#btn-notif').addEventListener('click', function () { openDialog('#dlg-notif'); });
+  $('#n-close').addEventListener('click', function () { closeDialog('#dlg-notif'); });
+  $('#n-notif').addEventListener('click', function () { native('openSettings', 'notifications'); });
+  $('#n-batt').addEventListener('click', function () { native('openSettings', 'battery'); });
+  $('#n-full').addEventListener('click', function () { native('openSettings', 'fullscreen'); });
+
   // my id
   $('#btn-myid').addEventListener('click', function () {
     $('#myid-box').textContent = me ? me.id : '';
@@ -658,10 +688,20 @@
   };
 
   /* ---------- start ---------- */
+  // Called by the Android shell when a notification is tapped while the page is running.
+  window.__open = function (id) {
+    if (!me || typeof id !== 'string' || !id) return false;
+    ensureContact(id);
+    openChat(id);
+    return true;
+  };
+
   function enterApp() {
     showScreen('home');
     renderHome();
     startPeer();
+    var pc = native('consumePendingChat'); // a notification tapped before the page was ready
+    if (pc) window.__open(String(pc));
   }
   if (me && me.id) enterApp(); else openSetup('');
 })();
