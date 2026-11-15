@@ -37,6 +37,7 @@ public class MainActivity extends Activity {
 
         root = new FrameLayout(this);
         setContentView(root);
+        showLastCrash();
         attachWeb();
 
         startService();
@@ -61,6 +62,33 @@ public class MainActivity extends Activity {
     }
 
     /** Opened from a notification: show the chat, and show over the lock screen for calls. */
+    /** If the app crashed last time, show the error text so it can be reported. */
+    private void showLastCrash() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "crash.txt");
+            if (!f.exists()) return;
+            byte[] b = new byte[(int) Math.min(f.length(), 6000)];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int n = in.read(b);
+            in.close();
+            f.delete();
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setText(new String(b, 0, Math.max(n, 0), "UTF-8"));
+            tv.setTextSize(11);
+            tv.setTextIsSelectable(true);
+            tv.setPadding(24, 24, 24, 24);
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            sv.addView(tv);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("Նախորդ անգամ սխալ եղավ. արեք սքրինշոթ")
+                    .setView(sv)
+                    .setPositiveButton("OK", null)
+                    .show();
+        } catch (Exception ignored) {
+            // the report is optional
+        }
+    }
+
     private void startService() {
         try {
             startForegroundService(new Intent(this, MessengerService.class));
