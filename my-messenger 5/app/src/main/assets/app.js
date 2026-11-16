@@ -156,6 +156,15 @@
   });
 
   /* ---------- home ---------- */
+  // one of six avatar shapes per contact, chosen from its id
+  function avatarEl(c) {
+    var h = 0, s = c.id || '';
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    var a = el('span', 'avatar', (c.name || c.id).charAt(0).toUpperCase());
+    a.setAttribute('data-k', String(h % 6));
+    a.setAttribute('aria-hidden', 'true');
+    return a;
+  }
   function renderHome() {
     var list = $('#chats');
     list.textContent = '';
@@ -167,14 +176,23 @@
       var li = el('li');
       var b = el('button', 'chat-item');
       b.type = 'button';
-      b.appendChild(el('span', 'avatar', (c.name || id).charAt(0).toUpperCase()));
+      b.appendChild(avatarEl(c));
       var body = el('span', 'ci-body');
       body.appendChild(el('span', 'ci-name', c.name || id));
       body.appendChild(el('span', 'ci-last', last ? (last.m ? 'Դու՝ ' : '') + last.x : c.id));
       b.appendChild(body);
-      if (c.unread > 0) b.appendChild(el('span', 'badge', String(c.unread)));
+      var side = el('span', 'ci-side');
+      if (last) side.appendChild(el('span', 'ci-time', hhmm(last.ts)));
+      if (c.unread > 0) side.appendChild(el('span', 'badge', String(c.unread)));
+      b.appendChild(side);
       b.addEventListener('click', function () { openChat(id); });
       li.appendChild(b);
+      var more = el('button', 'more');
+      more.type = 'button';
+      more.setAttribute('aria-label', 'Ընտրանքներ՝ ' + (c.name || id));
+      more.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>';
+      more.addEventListener('click', function () { openContact(id); });
+      li.appendChild(more);
       list.appendChild(li);
     });
   }
@@ -184,6 +202,7 @@
     if (!current) return;
     var c = ensureContact(current);
     $('#chat-name').textContent = c.name || c.id;
+    var av = avatarEl(c); $('#chat-avatar').textContent = av.textContent; $('#chat-avatar').setAttribute('data-k', av.getAttribute('data-k'));
     var p = pending(current).length;
     $('#chat-sub').textContent = !online ? 'Կապ չկա' : (p ? 'Չառաքված՝ ' + p : c.id);
   }
@@ -648,33 +667,38 @@
   });
 
   // contact details
-  var delArmed = false;
-  function openContact() {
-    if (!current) return;
-    var c = ensureContact(current);
+  var delArmed = false, contactId = null;
+  function openContact(id) {
+    id = (typeof id === 'string' && id) ? id : current;
+    if (!id) return;
+    contactId = id;
+    var c = ensureContact(id);
     $('#contact-title').textContent = c.name || c.id;
     $('#contact-id').textContent = c.id;
     $('#contact-name').value = c.name || '';
     delArmed = false;
-    $('#contact-del').textContent = 'Ջնջել զրույցը';
+    $('#contact-del').textContent = 'Ջնջել կոնտակտը';
+    $('#contact-hint').hidden = true;
     openDialog('#dlg-contact');
   }
-  $('#chat-title').addEventListener('click', openContact);
+  $('#chat-title').addEventListener('click', function () { openContact(); });
+  $('#btn-more').addEventListener('click', function () { openContact(); });
   $('#chat-title').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openContact(); } });
   $('#contact-close').addEventListener('click', function () { closeDialog('#dlg-contact'); });
   $('#contact-save').addEventListener('click', function () {
-    var c = ensureContact(current);
+    var c = ensureContact(contactId);
     var n = $('#contact-name').value.trim();
-    if (n) { c.name = n; c.custom = true; saveContacts(); renderChatHeader(); }
+    if (n) { c.name = n; c.custom = true; saveContacts(); if (current === contactId) renderChatHeader(); renderHome(); }
     closeDialog('#dlg-contact');
   });
   $('#contact-del').addEventListener('click', function () {
-    if (!delArmed) { delArmed = true; $('#contact-del').textContent = 'Հաստատել ջնջումը'; return; }
-    var id = current;
+    if (!delArmed) { delArmed = true; $('#contact-del').textContent = 'Այո, ջնջել'; $('#contact-hint').hidden = false; return; }
+    var id = contactId;
     delete contacts[id]; delete msgs[id];
     saveContacts(); saveMsgs();
     closeDialog('#dlg-contact');
-    closeChat();
+    if (current === id) closeChat(); else renderHome();
+    toast('Կոնտակտը ջնջվեց');
   });
 
   /* ---------- Android back button ---------- */
