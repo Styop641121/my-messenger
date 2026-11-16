@@ -40,11 +40,15 @@ public class MessengerService extends Service {
 
         Hub.ensure(this);
 
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        if (pm != null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mymessenger:link");
-            wakeLock.setReferenceCounted(false);
-            wakeLock.acquire();
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mymessenger:link");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+            }
+        } catch (Exception e) {
+            wakeLock = null; // without the permission the service still works
         }
     }
 
