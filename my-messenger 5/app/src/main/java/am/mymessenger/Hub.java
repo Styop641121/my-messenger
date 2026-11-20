@@ -3,8 +3,10 @@ package am.mymessenger;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Color;
+import android.net.Uri;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
+import android.webkit.ValueCallback;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -75,6 +77,17 @@ final class Hub {
                     return;
                 }
                 a.handlePermissionRequest(request);
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                MainActivity a = activity;
+                if (a == null) {
+                    callback.onReceiveValue(null);
+                    return true;
+                }
+                return a.pickFile(callback);
             }
         });
 

@@ -1,5 +1,6 @@
 package am.mymessenger;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -212,6 +213,56 @@ public class NativeBridge {
         } catch (Exception e) {
             // vibration is optional
         }
+    }
+
+    /** The page tells us a call (or a missed/declined ring) is over. */
+    @JavascriptInterface
+    public void callEnded() {
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                MainActivity a = Hub.activity;
+                if (a != null) {
+                    a.onCallFinished();
+                }
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public boolean canFullScreen() {
+        if (Build.VERSION.SDK_INT < 34) {
+            return true;
+        }
+        NotificationManager nm = nm();
+        return nm != null && nm.canUseFullScreenIntent();
+    }
+
+    @JavascriptInterface
+    public boolean isAppLock() {
+        return ctx.getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("lock", false);
+    }
+
+    /** Turns the app lock on or off. Returns false if the phone has no screen lock to use. */
+    @JavascriptInterface
+    public boolean setAppLock(final boolean on) {
+        if (on) {
+            KeyguardManager km = (KeyguardManager) ctx.getSystemService(Context.KEYGUARD_SERVICE);
+            if (km == null || !km.isDeviceSecure()) {
+                return false;
+            }
+        }
+        ctx.getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("lock", on).apply();
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                MainActivity a = Hub.activity;
+                if (a != null) {
+                    a.onLockChanged();
+                }
+            }
+        });
+        return true;
     }
 
     @JavascriptInterface
