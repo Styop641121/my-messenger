@@ -1,6 +1,51 @@
 (function () {
   'use strict';
 
+  /* ---------- timers that keep running when the page is in the background ----------
+     A hidden page gets its timers slowed down to about one per minute, which makes the
+     server drop the connection while the phone is locked. Timers that run inside a Worker
+     are not slowed down, so setTimeout/setInterval are routed through one. */
+  (function () {
+    try {
+      if (!window.Worker || !window.Blob || !window.URL || !URL.createObjectURL) return;
+      var src = 'var t={};onmessage=function(e){var d=e.data;' +
+        'if(d.a==="s"){t[d.i]=setTimeout(function(){delete t[d.i];postMessage(d.i)},d.d)}' +
+        'else if(d.a==="i"){t[d.i]=setInterval(function(){postMessage(d.i)},d.d)}' +
+        'else if(d.a==="c"){clearTimeout(t[d.i]);clearInterval(t[d.i]);delete t[d.i]}}';
+      var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      var cbs = {}, seq = 1000000;
+      var oST = window.setTimeout.bind(window), oSI = window.setInterval.bind(window);
+      var oCT = window.clearTimeout.bind(window), oCI = window.clearInterval.bind(window);
+      w.onmessage = function (e) {
+        var c = cbs[e.data];
+        if (!c) return;
+        if (!c.rep) delete cbs[e.data];
+        try { c.f.apply(window, c.args); } catch (err) { oST(function () { throw err; }, 0); }
+      };
+      function add(rep, f, d, args) {
+        var id = ++seq;
+        cbs[id] = { f: f, args: args, rep: rep };
+        w.postMessage({ a: rep ? 'i' : 's', i: id, d: d });
+        return id;
+      }
+      function clear(id, orig) {
+        if (cbs[id]) { delete cbs[id]; w.postMessage({ a: 'c', i: id }); } else orig(id);
+      }
+      window.setTimeout = function (f, d) {
+        d = Math.max(0, +d || 0);
+        if (typeof f !== 'function' || d < 20) return oST.apply(null, arguments);
+        return add(false, f, d, Array.prototype.slice.call(arguments, 2));
+      };
+      window.setInterval = function (f, d) {
+        d = Math.max(20, +d || 0);
+        if (typeof f !== 'function') return oSI.apply(null, arguments);
+        return add(true, f, d, Array.prototype.slice.call(arguments, 2));
+      };
+      window.clearTimeout = function (id) { clear(id, oCT); };
+      window.clearInterval = function (id) { clear(id, oCI); };
+    } catch (e) { /* the normal timers keep working */ }
+  })();
+
   /* ---------- helpers ---------- */
   function $(s) { return document.querySelector(s); }
   function el(tag, cls, text) {
@@ -117,6 +162,12 @@
     return contacts[id];
   }
   function chatOf(id) { if (!msgs[id]) msgs[id] = []; return msgs[id]; }
+  // A short history of connection events, shown in the profile window, to find out what happens in the background.
+  function netLog(text) {
+    var l = load('netlog', []);
+    l.push({ t: Date.now(), x: text });
+    save('netlog', l.slice(-14));
+  }
   function lastTs(id) { var m = msgs[id]; return m && m.length ? m[m.length - 1].ts : 0; }
   function pending(id) { return (msgs[id] || []).filter(function (m) { return m.m && m.s === 'p'; }); }
 
@@ -124,7 +175,9 @@
   function showScreen(name) {
     ['setup', 'home', 'chat'].forEach(function (s) { $('#' + s).hidden = s !== name; });
   }
+  var lastOn = null;
   function setStatus(on, text) {
+    if (on !== lastOn) { lastOn = on; netLog(on ? 'Կապը կա' : 'Կապը կորավ'); }
     online = on;
     $('#status').className = 'status' + (on ? ' on' : '');
     $('#status-text').textContent = text;
@@ -344,7 +397,11 @@
     conn.on('error', function () { finish(null); });
   }
 
+  var lastTick = Date.now();
   function tick() {
+    var now = Date.now();
+    if (now - lastTick > 60000) netLog('Էջը քնել էր ' + Math.round((now - lastTick) / 60000) + ' ր');
+    lastTick = now;
     if (!me || !$('#setup').hidden) return;
     if (!peer || peer.destroyed) { startPeer(); return; }
     if (peer.disconnected) { try { peer.reconnect(); } catch (e) {} return; }
@@ -729,6 +786,8 @@
     $('#myid-box').textContent = me.id;
     paintAvatar($('#me-avatar'), me);
     $('#photo-clear').hidden = !okPhoto(me.photo);
+    var nl = load('netlog', []);
+    $('#netlog').textContent = nl.length ? nl.map(function (e) { return hhmm(e.t) + '  ' + e.x; }).join('\n') : 'Դեռ գրառում չկա';
     var hasLock = hasNative('setAppLock');
     $('#lock-row').hidden = !hasLock;
     if (hasLock) $('#lock-toggle').textContent = native('isAppLock') === true ? 'Անջատել հավելվածի կողպումը' : 'Կողպել հավելվածը հեռախոսի ծածկագրով';
